@@ -1,0 +1,13 @@
+/wandb/
+/configs/
+/checkpoints/
+/figures/
+/qt_registrations/
+.idea
+*.ckpt
+*.png
+*.yaml
+*.csv
+*.xlsx
+*.eps
+*-checkpoint.ipynb
