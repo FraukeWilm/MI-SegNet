@@ -137,7 +137,7 @@ class Seg_encoder_LM(nn.Module):
         return self.encoder(input)
     
 class Seg_decoder_LM(nn.Module):
-    def __init__(self,in_channels=1,init_features=32,num_blocks=2):
+    def __init__(self, out_channels=1, init_features=32,num_blocks=2):
         super(Seg_decoder_LM, self).__init__()
         
         features = init_features
@@ -155,8 +155,7 @@ class Seg_decoder_LM(nn.Module):
             Res_layer(features,features,blocks=num_blocks,stride=1),
             UpConv2d_s2(features,features),
             Res_layer(features,features,blocks=num_blocks,stride=1),
-            nn.Conv2d(features, in_channels, kernel_size=1),
-            nn.Sigmoid()
+            nn.Conv2d(features, out_channels, kernel_size=1),
         )
         
         
