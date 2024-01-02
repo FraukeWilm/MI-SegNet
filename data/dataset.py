@@ -47,7 +47,8 @@ class ScannerDataset(torch.utils.data.Dataset):
                 y_patch1 = slide_obj.get_y_patch(x1, y1)
                 y_patch2 = slide_obj.get_y_patch(x2, y2)
                 break
-            except:
+            except Exception as e:
+                print(e)
                 white = self._whites[slide_path_A.stem[:6]][slide_path_A.stem[7:]]
                 self.slide_objs[slide_path_A.name] = SlideContainer(slide_path_A, slide_path_B, self._anno_file_path, self._ds_level,
                                                                   self._patch_size, self._label_dict,white)
