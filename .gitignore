@@ -1,8 +1,6 @@
 /wandb/
 /configs/
-/checkpoints/
-/figures/
-/qt_registrations/
+/ckpts/
 .idea
 *.ckpt
 *.png
