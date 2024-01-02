@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-
 from taming.model import Encoder, Decoder
 from taming.quantize import VectorQuantizer2 as VectorQuantizer
 from taming.perceptual_loss import VQLPIPSWithDiscriminator, LPIPS
