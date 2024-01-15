@@ -11,7 +11,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQ
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from data.datamodule import BaseDataModule
 from module import MISegModule
-from module_vqgan import VQModule
+from module_vqgan import VQModule, AutoencoderKL
 import wandb
 
 
@@ -29,15 +29,16 @@ def random_seed(seed_value, use_cuda):
       torch.backends.cudnn.benchmark = False
   print(f'Random state set:{seed_value}, cuda used: {use_cuda}')
 
-@hydra.main(version_base=None, config_path="configs/", config_name="config_vqgan")
+@hydra.main(version_base=None, config_path="configs/", config_name="config")
 def main(cfg: DictConfig):
     # calculate batch_size
     cfg.data.batch_size = cfg.data.batch_base * cfg.cluster.batch_mul
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger = pl_loggers.WandbLogger(project=cfg.wandb.project)
     data_module = BaseDataModule(cfg)
-    #module = MISegModule(cfg, device)
-    module = VQModule(cfg, device)
+    module = MISegModule(cfg, device)
+    #module = VQModule(cfg, device)
+    #module = AutoencoderKL(cfg, device)
     random_seed(cfg.training.seed, torch.cuda.is_available())
 
     metric_checkpoint = ModelCheckpoint(dirpath=logger.experiment.dir, verbose=True, monitor='Val Loss', mode='min')
@@ -48,8 +49,8 @@ def main(cfg: DictConfig):
 
     trainer = pl.Trainer(max_epochs=cfg.training.epochs,
                          callbacks=callbacks, logger=logger,
-                         # accelerator='gpu',
-                         # strategy=DDPStrategy(find_unused_parameters=True, process_group_backend=cfg.cluster.backend),
+                         accelerator='gpu',
+                         strategy=DDPStrategy(find_unused_parameters=True, process_group_backend=cfg.cluster.backend),
                          devices=cfg.cluster.n_gpus)
 
     trainer.fit(module, data_module)
