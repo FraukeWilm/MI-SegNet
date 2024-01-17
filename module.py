@@ -1,24 +1,11 @@
-import torch
 import torchmetrics
 import pytorch_lightning as pl
-import torch.nn.functional as F
 from MI_SegNet import Mine_Conv, Seg_encoder_LM,Seg_decoder_LM,Recon_encoder_LM, Recon_decoder_LM
 from torchvision import transforms
 from wandb.sdk.data_types.image import Image
 from torchmetrics.classification.jaccard import JaccardIndex
-
-"""
-def save_checkpoint(state, is_best, outdir):
-    if not os.path.exists(outdir):
-        os.makedirs(outdir)
-
-    checkpoint_file = os.path.join(outdir, 'checkpoint.pth')
-    best_file = os.path.join(outdir, 'model_best.pth')
-    torch.save(state, checkpoint_file)
-    if is_best:
-        shutil.copyfile(checkpoint_file, best_file)
-"""
-
+from loss import *
+from perceptual_loss import LPIPS
 
 class MISegModule(pl.LightningModule):
     def __init__(self, cfg, device, **kwargs):
@@ -31,7 +18,7 @@ class MISegModule(pl.LightningModule):
         # save all named parameters
         self.save_hyperparameters()
 
-        self.mine = Mine_Conv(in_channels_x=64 * 16, in_channels_y=16 * 16, inter_channels=64).to(device)
+        self.mine = Mine_Conv(in_channels_x=64 * 16, in_channels_y=16 * 16, inter_channels=64, last_pooling_size=2).to(device)
         self.rec_encoder = Recon_encoder_LM(in_channels=cfg.model.input_channel, init_features=16).to(device)
         self.rec_decoder = Recon_decoder_LM(in_channels_a=64 * 16, in_channels_d=16 * 16,
                                             out_channels=cfg.model.input_channel, init_features=16).to(device)
@@ -47,8 +34,20 @@ class MISegModule(pl.LightningModule):
         self._seg_loss_agg = torchmetrics.MeanMetric()
         self._recon_loss_agg = torchmetrics.MeanMetric()
         self._mi_loss_agg = torchmetrics.MeanMetric()
-        self.jaccard = JaccardIndex(task="multiclass", num_classes=cfg.model.output_channel, average='none', ignore_index=-1)
+        self.jaccard_source = JaccardIndex(task="multiclass", num_classes=cfg.model.output_channel, average='none', ignore_index=-1)
+        self.jaccard_target = JaccardIndex(task="multiclass", num_classes=cfg.model.output_channel, average='none', ignore_index=-1)
 
+        # intialize loss functions and weights
+        self.ce = CELoss()
+        self.dice = DiceLoss()
+        self.l1 = L1Loss()
+        self.w_l1 = cfg.loss.w_l1
+        self.ssim = SSIMLoss(device=device)
+        self.w_ssim = cfg.loss.w_ssim
+        self.pl = LPIPS()
+        self.w_p = cfg.loss.w_p
+
+        # optimizers
         self.optimizer_idxs = ['optimizer_mine', 'optimizer_rec_en', 'optimizer_rec_de', 'optimizer_seg_en', 'optimizer_seg_de']
 
 
@@ -62,14 +61,14 @@ class MISegModule(pl.LightningModule):
         inputs_2 = batch[1].float().to(self.device)
         inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
         inputs_21 = batch[3].float().to(self.device) # domain 2 anatomy 1
-        label_1 = batch[4].to(self.device)
-        label_2 = batch[5].to(self.device)
+        labels_1 = batch[4].to(self.device)
+        labels_2 = batch[5].to(self.device)
 
         inputs_1_trans = self.transform_image(inputs_1)
         inputs_2_trans = self.transform_image(inputs_2)
 
-        seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, label_1, True)
-        seg_loss_2, seg_results_2 = self.update_Seg(inputs_2_trans, label_2, True)
+        seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, labels_1, True)
+        seg_loss_2, seg_results_2 = self.update_Seg(inputs_2_trans, labels_2, True)
         seg_loss = seg_loss_1 + seg_loss_2
 
         recon_loss_1, rec_results_1 = self.update_Rec(inputs_1_trans, inputs_1, True)
@@ -93,44 +92,63 @@ class MISegModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        inputs = batch[0].float().to(self.device)
-        labels = batch[4].to(self.device)
+        inputs_1 = batch[0].float().to(self.device)
+        inputs_2 = batch[1].float().to(self.device)
+        inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
+        inputs_21 = batch[3].float().to(self.device) # domain 2 anatomy 1
+        labels_1 = batch[4].to(self.device)
+        labels_2 = batch[5].to(self.device)
 
-        inputs_trans = self.transform_image(inputs)
+        inputs_1_trans = self.transform_image(inputs_1)
+        inputs_2_trans = self.transform_image(inputs_2)
+        inputs_12_trans = self.transform_image(inputs_1)
+        inputs_2_trans = self.transform_image(inputs_2)
 
         # forward
-        seg_loss, seg_result = self.update_Seg(inputs_trans, labels, False)
-        recon_loss, rec_results = self.update_Rec(inputs_trans, inputs, False)
+        seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, labels_1, False)
+        seg_loss_2, seg_results_2 = self.update_Seg(inputs_2_trans, labels_2, False)
+        seg_loss = seg_loss_1 + seg_loss_2
 
-        mi_loss = self.update_MI(inputs_trans, False)
+        recon_loss_1, rec_results_1 = self.update_Rec(inputs_1_trans, inputs_1, False)
+        recon_loss_2, rec_results_2 = self.update_Rec(inputs_2_trans, inputs_2, False)
+        recon_loss = recon_loss_1 + recon_loss_2
 
-        val_loss = seg_loss + recon_loss
+        rec_adv_loss_1, rec_results_12 = self.update_Rec_Adv(inputs_1_trans, inputs_2_trans, inputs_12, False)
+        rec_adv_loss_2, rec_results_21 = self.update_Rec_Adv(inputs_2_trans, inputs_1_trans, inputs_21, False)
+        rec_adv_loss = rec_adv_loss_1 + rec_adv_loss_2
+
+        mi_loss_1 = self.update_MI(inputs_1_trans, False)
+        mi_loss_2 = self.update_MI(inputs_2_trans, False)
+        mi_loss = mi_loss_1 + mi_loss_2
+
+        val_loss = seg_loss + recon_loss + rec_adv_loss
         self._val_loss_agg.update(val_loss)
         self._seg_loss_agg.update(seg_loss)
         self._recon_loss_agg.update(recon_loss)
         self._mi_loss_agg.update(mi_loss)
-        self.jaccard.update(seg_result, labels)
+        self.jaccard_source.update(seg_results_1, labels_1)
+        self.jaccard_target.update(seg_results_2, labels_1)
 
         # we could also log example images to wandb here
         if batch_idx == 0 and self.current_epoch % 10 ==0:
-            self.log_images(inputs, labels, seg_result, rec_results)
+            self.log_images(inputs_1, inputs_2, labels_1, labels_2, seg_results_1, seg_results_2, rec_results_1, rec_results_2, rec_results_12, rec_results_21)
         return val_loss
 
-    def log_images(self, inputs, labels, seg_result, rec_results):
+    def log_images(self, inputs_1, inputs_2, labels_1, labels_2, seg_results_1, seg_results_2, rec_results_1, rec_results_2, rec_results_12, rec_results_21):
         with torch.no_grad():
             class_labels = {0: "excluded", 1: "background", 2: "non-tumor", 3: "tumor"}
-            for i in range(inputs.shape[0]):
-                mask_img = Image(255 * inputs[i].permute(1, 2, 0).cpu().numpy(), masks={
+            for i in range(inputs_1.shape[0]):
+                mask_img = Image(255 * torch.cat((inputs_1[i], inputs_2[i]), dim=-1).permute(1, 2, 0).cpu().numpy(), masks={
                     "ground_truth": {
-                        "mask_data": labels[i].cpu().numpy() + 1,
+                        "mask_data": torch.cat((labels_1[i], labels_2[i]), dim=-1).cpu().numpy() + 1,
                         "class_labels": class_labels
                     },
                     "prediction": {
-                        "mask_data": torch.argmax(seg_result[i], dim=0).cpu().numpy() + 1,
+                        "mask_data": torch.cat((torch.argmax(seg_results_1[i], dim=0),torch.argmax(seg_results_2[i], dim=0)), dim=-1).cpu().numpy() + 1,
                         "class_labels": class_labels
                     },
                 })
-                rec_img = Image(255 * rec_results[i].permute(1, 2, 0).cpu().numpy())
+                rec_img = Image(255 * torch.cat((rec_results_1[i], rec_results_2[i], rec_results_12[i], rec_results_21[i]), dim=-1).permute(1, 2, 0).cpu().numpy())
                 self.logger.log_metrics({"Segmentation Output": mask_img})
                 self.logger.log_metrics({"Reconstruction Output": rec_img})
 
@@ -154,10 +172,15 @@ class MISegModule(pl.LightningModule):
         self.log("MI Loss", self._mi_loss_agg.compute(), sync_dist=True)
         self._mi_loss_agg.reset()
 
-        iou = self.jaccard.compute()
-        self.log("mIoU", iou.mean(), sync_dist=True)
-        self.log_dict({"IoU Background": iou[0], "IoU Normal": iou[1], "IoU Tumor": iou[2]}, sync_dist=True)
-        self.jaccard.reset()
+        iou_source = self.jaccard_source.compute()
+        self.log("Source mIoU", iou_source.mean(), sync_dist=True)
+        self.log_dict({"Source IoU Background": iou_source[0], "Source IoU Normal": iou_source[1], "Source IoU Tumor": iou_source[2]}, sync_dist=True)
+        self.jaccard_source.reset()
+
+        iou_target = self.jaccard_target.compute()
+        self.log("Target mIoU", iou_target.mean(), sync_dist=True)
+        self.log_dict({"Target IoU Background": iou_target[0], "Target IoU Normal": iou_target[1], "Target IoU Tumor": iou_target[2]}, sync_dist=True)
+        self.jaccard_target.reset()
 
     def configure_optimizers(self):
         schedulers = []
@@ -188,32 +211,10 @@ class MISegModule(pl.LightningModule):
         output = seg_results.transpose(1, -1).contiguous()
         output = output.view(-1, output.shape[-1])
         labels = labels.transpose(1, -1).contiguous().view(-1)
-        target = labels.clone()
         # CE loss with ignore index
-        loss_ce = F.cross_entropy(output, target.long(), reduction='mean', ignore_index=ignore_index)
-
+        loss_ce = self.ce(output, labels)
         # Dice loss with ignore index
-        eps = 0.0001
-        output = torch.softmax(output, dim=1)
-        encoded_target = output.detach() * 0
-        if ignore_index is not None:
-            mask = labels == ignore_index
-            target[mask] = 0
-            encoded_target.scatter_(1, target.long().unsqueeze(1), 1)
-            mask = mask.unsqueeze(1).expand_as(encoded_target)
-            encoded_target[mask] = 0
-        else:
-            encoded_target.scatter_(1, target.long().unsqueeze(1), 1)
-
-        intersection = output * encoded_target
-        numerator = intersection.sum(0)
-        denominator = output + encoded_target
-
-        if ignore_index is not None:
-            denominator[mask] = 0
-        denominator = denominator.sum(0)
-
-        loss_dice = 1-((2*(numerator).sum() + eps)/(denominator).sum() + eps)
+        loss_dice = self.dice(output, labels)
         loss = loss_ce + loss_dice
 
         if train:
@@ -230,7 +231,10 @@ class MISegModule(pl.LightningModule):
 
         recon_result = self.rec_decoder(z_a, z_d)
 
-        rec_loss = F.l1_loss(torch.squeeze(recon_result), torch.squeeze(gt), reduction='mean')
+        l1_loss = self.l1(recon_result, gt)
+        ssim_loss = 1 - self.ssim(recon_result, gt)
+        p_loss = self.pl(gt.contiguous(), recon_result.contiguous()).mean()
+        rec_loss = (self.w_l1*l1_loss + self.w_ssim*ssim_loss + self.w_p*p_loss)/(self.w_l1+self.w_ssim+self.w_p)
 
         if train:
             rec_loss.backward()
@@ -247,7 +251,9 @@ class MISegModule(pl.LightningModule):
 
         recon_result = self.rec_decoder(z_a, z_d)
 
-        rec_loss = F.l1_loss(torch.squeeze(recon_result), torch.squeeze(inputs_12), reduction='mean')
+        l1_loss = self.l1(recon_result, inputs_12)
+        ssim_loss = 1 - self.ssim(recon_result, inputs_12)
+        rec_loss = l1_loss + ssim_loss
 
         if train:
             rec_loss.backward()
