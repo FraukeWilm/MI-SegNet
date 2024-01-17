@@ -41,7 +41,7 @@ def main(cfg: DictConfig):
     #module = AutoencoderKL(cfg, device)
     random_seed(cfg.training.seed, torch.cuda.is_available())
 
-    metric_checkpoint = ModelCheckpoint(dirpath=logger.experiment.dir, verbose=True, monitor='Val Loss', mode='min')
+    metric_checkpoint = ModelCheckpoint(dirpath=logger.experiment.dir, verbose=True, monitor='Source mIoU', mode='max')
 
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
     progress_bar = TQDMProgressBar(refresh_rate=int(256 / cfg.data.batch_size))
@@ -51,7 +51,8 @@ def main(cfg: DictConfig):
                          callbacks=callbacks, logger=logger,
                          accelerator='gpu',
                          strategy=DDPStrategy(find_unused_parameters=True, process_group_backend=cfg.cluster.backend),
-                         devices=cfg.cluster.n_gpus)
+                         devices=cfg.cluster.n_gpus,
+                         log_every_n_steps = 20)
 
     trainer.fit(module, data_module)
     wandb.finish()
