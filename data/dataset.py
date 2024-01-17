@@ -53,5 +53,5 @@ class ScannerDataset(torch.utils.data.Dataset):
                 self.slide_objs[slide_path_A.name] = SlideContainer(slide_path_A, slide_path_B, self._anno_file_path, self._ds_level,
                                                                   self._patch_size, self._label_dict,white)
                 slide_obj = self.slide_objs[slide_path_A.name]
-        transformed = self._transforms(image=patch1_A, image_2=patch2_A, image_3=patch1_B, image_4= patch2_B, mask=y_patch1, mask_2=y_patch2)
+        transformed = self._transforms(image=patch1_A, image_2=patch2_B, image_3=patch2_A, image_4= patch1_B, mask=y_patch1, mask_2=y_patch2)
         return transformed['image'], transformed['image_2'], transformed['image_3'], transformed['image_4'],transformed['mask'], transformed['mask_2']
