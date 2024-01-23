@@ -6,6 +6,7 @@ from wandb.sdk.data_types.image import Image
 from torchmetrics.classification.jaccard import JaccardIndex
 from loss import *
 from perceptual_loss import LPIPS
+import numpy as np
 
 class MISegModule(pl.LightningModule):
     def __init__(self, cfg, device, **kwargs):
@@ -18,7 +19,7 @@ class MISegModule(pl.LightningModule):
         # save all named parameters
         self.save_hyperparameters()
 
-        self.mine = Mine_Conv(in_channels_x=64 * 16, in_channels_y=16 * 16, inter_channels=64, last_pooling_size=2).to(device)
+        self.mine = Mine_Conv(in_channels_x=64 * 16, in_channels_y=16 * 16, inter_channels=64, last_pooling_size=int(np.power(2, cfg.data.patch_size//256))).to(device)
         self.rec_encoder = Recon_encoder_LM(in_channels=cfg.model.input_channel, init_features=16).to(device)
         self.rec_decoder = Recon_decoder_LM(in_channels_a=64 * 16, in_channels_d=16 * 16,
                                             out_channels=cfg.model.input_channel, init_features=16).to(device)
@@ -57,8 +58,8 @@ class MISegModule(pl.LightningModule):
         return output
 
     def training_step(self, batch, batch_idx):
-        inputs_1 = batch[0].float().to(self.device)
-        inputs_2 = batch[1].float().to(self.device)
+        inputs_1 = batch[0].float().to(self.device) # domain 1 anatomy 1
+        inputs_2 = batch[1].float().to(self.device) # domain 2 anatomy 2
         inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
         inputs_21 = batch[3].float().to(self.device) # domain 2 anatomy 1
         labels_1 = batch[4].to(self.device)
@@ -92,16 +93,14 @@ class MISegModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        inputs_1 = batch[0].float().to(self.device)
-        inputs_2 = batch[1].float().to(self.device)
+        inputs_1 = batch[0].float().to(self.device) # domain 1 anatomy 1
+        inputs_2 = batch[1].float().to(self.device)  # domain 2 anatomy 2
         inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
         inputs_21 = batch[3].float().to(self.device) # domain 2 anatomy 1
         labels_1 = batch[4].to(self.device)
         labels_2 = batch[5].to(self.device)
 
         inputs_1_trans = self.transform_image(inputs_1)
-        inputs_2_trans = self.transform_image(inputs_2)
-        inputs_12_trans = self.transform_image(inputs_1)
         inputs_2_trans = self.transform_image(inputs_2)
 
         # forward
@@ -127,17 +126,18 @@ class MISegModule(pl.LightningModule):
         self._recon_loss_agg.update(recon_loss)
         self._mi_loss_agg.update(mi_loss)
         self.jaccard_source.update(seg_results_1, labels_1)
-        self.jaccard_target.update(seg_results_2, labels_1)
+        self.jaccard_target.update(seg_results_2, labels_2)
 
         # we could also log example images to wandb here
         if batch_idx == 0 and self.current_epoch % 10 ==0:
-            self.log_images(inputs_1, inputs_2, labels_1, labels_2, seg_results_1, seg_results_2, rec_results_1, rec_results_2, rec_results_12, rec_results_21)
+            self.log_images(inputs_1, inputs_2, inputs_12, inputs_21, labels_1, labels_2, seg_results_1, seg_results_2, rec_results_1, rec_results_2, rec_results_12, rec_results_21)
         return val_loss
 
-    def log_images(self, inputs_1, inputs_2, labels_1, labels_2, seg_results_1, seg_results_2, rec_results_1, rec_results_2, rec_results_12, rec_results_21):
+    def log_images(self, inputs_1, inputs_2, inputs_12, inputs_21, labels_1, labels_2, seg_results_1, seg_results_2, rec_results_1, rec_results_2, rec_results_12, rec_results_21):
         with torch.no_grad():
             class_labels = {0: "excluded", 1: "background", 2: "non-tumor", 3: "tumor"}
             for i in range(inputs_1.shape[0]):
+                input = Image(255 * torch.cat((inputs_1[i], inputs_21[i], inputs_2[i], inputs_12[i]),dim=-1).permute(1, 2, 0).cpu().numpy())
                 mask_img = Image(255 * torch.cat((inputs_1[i], inputs_2[i]), dim=-1).permute(1, 2, 0).cpu().numpy(), masks={
                     "ground_truth": {
                         "mask_data": torch.cat((labels_1[i], labels_2[i]), dim=-1).cpu().numpy() + 1,
@@ -149,9 +149,9 @@ class MISegModule(pl.LightningModule):
                     },
                 })
                 rec_img = Image(255 * torch.cat((rec_results_1[i], rec_results_2[i], rec_results_12[i], rec_results_21[i]), dim=-1).permute(1, 2, 0).cpu().numpy())
+                self.logger.log_metrics({"Input": input})
                 self.logger.log_metrics({"Segmentation Output": mask_img})
                 self.logger.log_metrics({"Reconstruction Output": rec_img})
-
 
 
     def training_epoch_end(self, outputs):
@@ -215,7 +215,7 @@ class MISegModule(pl.LightningModule):
         loss_ce = self.ce(output, labels)
         # Dice loss with ignore index
         loss_dice = self.dice(output, labels)
-        loss = loss_ce + loss_dice
+        loss = (1/3)*loss_ce + (2/3)*loss_dice
 
         if train:
             loss.backward()
@@ -233,8 +233,10 @@ class MISegModule(pl.LightningModule):
 
         l1_loss = self.l1(recon_result, gt)
         ssim_loss = 1 - self.ssim(recon_result, gt)
-        p_loss = self.pl(gt.contiguous(), recon_result.contiguous()).mean()
-        rec_loss = (self.w_l1*l1_loss + self.w_ssim*ssim_loss + self.w_p*p_loss)/(self.w_l1+self.w_ssim+self.w_p)
+        p_loss = self.pl(recon_result.contiguous(), gt.contiguous()).mean()
+        rec_loss = self.w_l1*l1_loss + self.w_ssim*ssim_loss + self.w_p*p_loss
+        rec_loss /= self.w_l1+self.w_ssim+self.w_p
+
 
         if train:
             rec_loss.backward()
@@ -253,7 +255,9 @@ class MISegModule(pl.LightningModule):
 
         l1_loss = self.l1(recon_result, inputs_12)
         ssim_loss = 1 - self.ssim(recon_result, inputs_12)
-        rec_loss = l1_loss + ssim_loss
+        p_loss = self.pl(recon_result.contiguous(), inputs_12.contiguous()).mean()
+        rec_loss = self.w_l1 * l1_loss + self.w_ssim * ssim_loss + self.w_p * p_loss
+        rec_loss /= self.w_l1+self.w_ssim+self.w_p
 
         if train:
             rec_loss.backward()
