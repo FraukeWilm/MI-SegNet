@@ -104,3 +104,14 @@ class SSIMLoss(torch.nn.Module):
             self.channel = channel
 
         return _ssim(img1, img2, window, self.window_size, channel, self.size_average)
+
+class DiscLoss(torch.nn.Module):
+    def __int__(self):
+        super(DiscLoss, self).__init__()
+
+    def forward(self, pred, should_be_classified_as_real):
+            bs = pred.size(0)
+            if should_be_classified_as_real:
+                return F.softplus(-pred).view(bs, -1).mean()
+            else:
+                return F.softplus(pred).view(bs, -1).mean()
