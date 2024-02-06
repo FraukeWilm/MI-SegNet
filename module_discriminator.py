@@ -1,6 +1,7 @@
 import torchmetrics
 import pytorch_lightning as pl
-from MI_SegNet import Mine_Conv, Seg_encoder_LM,Seg_decoder_LM,Recon_encoder_LM, Recon_decoder_LM
+from MI_SegNet import Mine_Conv, Seg_encoder_LM, Seg_decoder_LM,Recon_encoder_LM, Recon_decoder_LM
+from StyleGANDiscriminator.discriminator import Discriminator
 from torchvision import transforms
 from wandb.sdk.data_types.image import Image
 from torchmetrics.classification.jaccard import JaccardIndex
@@ -31,6 +32,7 @@ class MISegModule(pl.LightningModule):
         self._scheduler = 'none' #step
 
         self._train_loss_agg = torchmetrics.MeanMetric()
+        self._train_disc_loss_agg = torchmetrics.MeanMetric()
         self._val_loss_agg = torchmetrics.MeanMetric()
         self._seg_loss_agg = torchmetrics.MeanMetric()
         self._recon_loss_agg = torchmetrics.MeanMetric()
@@ -47,9 +49,14 @@ class MISegModule(pl.LightningModule):
         self.w_ssim = cfg.loss.w_ssim
         self.pl = LPIPS()
         self.w_p = cfg.loss.w_p
+        self.d_loss = DiscLoss()
+        self.w_d = cfg.loss.w_d
 
         # optimizers
         self.optimizer_idxs = ['optimizer_mine', 'optimizer_rec_en', 'optimizer_rec_de', 'optimizer_seg_en', 'optimizer_seg_de']
+        if self.w_d > 0:
+            self.optimizer_idxs.append('optimizer_disc')
+            self.discriminator = Discriminator(size=cfg.data.patch_size)
 
 
     def forward(self, x):
@@ -87,6 +94,12 @@ class MISegModule(pl.LightningModule):
         for _ in range(5):
             learn_mi_loss_1 = self.learn_mine(inputs_1_trans)
             learn_mi_loss_2 = self.learn_mine(inputs_2_trans)
+
+        # Train discriminator
+        if self.w_d > 0:
+            disc_loss_1 = self.update_Disc(inputs_1_trans)
+            disc_loss_2 = self.update_Disc(inputs_2_trans)
+            self._train_disc_loss_agg(disc_loss_1 + disc_loss_2)
 
         loss = seg_loss + recon_loss + rec_adv_loss
         self._train_loss_agg.update(loss)
@@ -158,6 +171,8 @@ class MISegModule(pl.LightningModule):
         # required if values returned in the training_steps have to be processed in a specific way
         self.log("Train Loss", self._train_loss_agg.compute(), sync_dist=True)
         self._train_loss_agg.reset()
+        self.log("Disc Loss", self._train_disc_loss_agg.compute(), sync_dist=True)
+        self._train_disc_loss_agg.reset()
 
     def validation_epoch_end(self, outputs):
         # required if values returned in the validation_step have to be processed in a specific way
@@ -192,6 +207,10 @@ class MISegModule(pl.LightningModule):
         optimizer_seg_en = torch.optim.Adam(self.seg_encoder.parameters(), lr=self._lr)
         optimizer_seg_de = torch.optim.Adam(self.seg_decoder.parameters(), lr=self._lr)
         optimizers = [optimizer_mine, optimizer_rec_en, optimizer_rec_de, optimizer_seg_en, optimizer_seg_de]
+
+        if self.w_d > 0:
+            optimizer_disc = torch.optim.Adam(self.discriminator.parameters(), lr=self._lr)
+            optimizers.append(optimizer_disc)
 
         # configure shedulers based on command line parameters
         if self._scheduler == "none":
@@ -235,7 +254,15 @@ class MISegModule(pl.LightningModule):
         ssim_loss = 1 - self.ssim(recon_result, gt)
         p_loss = self.pl(recon_result.contiguous(), gt.contiguous()).mean()
         rec_loss = self.w_l1*l1_loss + self.w_ssim*ssim_loss + self.w_p*p_loss
-        rec_loss /= self.w_l1+self.w_ssim+self.w_p
+
+        if self.w_d > 0:
+            pred_rec = self.discriminator(recon_result)
+
+            # For generator training original image patch and reconstruction should be misclassified
+            disc_loss = self.d_loss(pred_rec, should_be_classified_as_real=True)
+            rec_loss += self.w_d*disc_loss
+
+        rec_loss /= self.w_l1+self.w_ssim+self.w_p+self.w_d
 
 
         if train:
@@ -257,7 +284,15 @@ class MISegModule(pl.LightningModule):
         ssim_loss = 1 - self.ssim(recon_result, inputs_12)
         p_loss = self.pl(recon_result.contiguous(), inputs_12.contiguous()).mean()
         rec_loss = self.w_l1 * l1_loss + self.w_ssim * ssim_loss + self.w_p * p_loss
-        rec_loss /= self.w_l1+self.w_ssim+self.w_p
+
+        if self.w_d > 0:
+            pred_rec = self.discriminator(recon_result)
+
+            # For generator training original image patch and reconstruction should be misclassified
+            disc_loss = self.d_loss(pred_rec, should_be_classified_as_real=True)
+            rec_loss += self.w_d*disc_loss
+
+        rec_loss /= self.w_l1+self.w_ssim+self.w_p+self.w_d
 
         if train:
             rec_loss.backward()
@@ -267,6 +302,27 @@ class MISegModule(pl.LightningModule):
             self.reset_grad()
 
         return rec_loss, recon_result
+
+    def update_Disc(self, inputs):
+        with torch.no_grad():
+            z_a = self.seg_encoder(inputs)
+            z_d = self.rec_encoder(inputs)
+
+            recon_result = self.rec_decoder(z_a, z_d)
+        pred_real = self.discriminator(inputs)
+        pred_rec = self.discriminator(recon_result)
+
+        loss_real = self.d_loss(pred_real, should_be_classified_as_real=True)
+        loss_rec = self.d_loss(pred_rec, should_be_classified_as_real=False)
+
+        disc_loss = loss_real + loss_rec
+
+        disc_loss.backward()
+        self.optimizers()[self.optimizer_idxs.index('optimizer_disc')].step()
+        self.reset_grad()
+
+        return disc_loss
+
 
     def update_MI(self, inputs, train):
         z_a = self.seg_encoder(inputs)
