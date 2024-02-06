@@ -1,5 +1,4 @@
 /wandb/
-/configs/
 /ckpts/
 .idea
 *.ckpt
