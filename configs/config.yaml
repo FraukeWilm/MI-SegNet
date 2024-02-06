@@ -1,0 +1,49 @@
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
+wandb:
+  entity: frauke
+  project: MI-SegNet
+
+files:
+  image_path: /Volumes/SLIDES/Slides/SegmentationMultiScanner
+  annotation_file: /Volumes/SLIDES/Slides/SegmentationMultiScanner/scc-full-res.json
+
+data:
+  patch_size: 256
+  batch_size: null
+  batch_base: 2 #8
+  ds_factor: 4
+  patches_per_slide: 8
+
+model:
+  input_channel: 3
+  output_channel: 3
+  init_feature: 32
+  max_grad_norm: 10
+
+cluster:
+  n_gpus: 1
+  batch_mul: 1
+  n_workers: 2
+  backend: gloo #nccl
+
+training:
+  seed: 42
+  scanner_A: cs2
+  scanner_B: nz20
+  lr: 1e-4
+  epochs: 200
+
+loss:
+  w_l1: 1.0
+  w_ssim: 1.0
+  w_p: 1.0
+  w_d: 0.0
