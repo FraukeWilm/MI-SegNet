@@ -6,7 +6,7 @@ class VGGPerceptualLoss(torch.nn.Module):
     def __init__(self, resize=True):
         super(VGGPerceptualLoss, self).__init__()
         blocks = []
-        vgg_features = torchvision.models.vgg16(pretrained=True).features
+        vgg_features = torchvision.models.vgg16(weights='VGG16_Weights.DEFAULT').features
         blocks.append(vgg_features[:4].eval())
         blocks.append(vgg_features[4:9].eval())
         blocks.append(vgg_features[9:16].eval())
@@ -49,7 +49,7 @@ class ResNetPerceptualLoss(torch.nn.Module):
     def __init__(self, resize=True):
         super(ResNetPerceptualLoss, self).__init__()
         blocks = []
-        resnet = torchvision.models.resnet18(pretrained=True)
+        resnet = torchvision.models.resnet18(weights='ResNet18_Weights.DEFAULT')
         # SSL pre-trained weight from https://github.com/ozanciga/self-supervised-histopathology?tab=readme-ov-file
         state = torch.load('ckpts/resnet.ckpt', map_location='cpu')
         state_dict = {}
