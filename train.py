@@ -11,7 +11,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQ
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from data.datamodule import BaseDataModule
 from module import MISegModule
-from module_vqgan import VQModule, AutoencoderKL
+from module_baseline_unet import BaselineModule
 import wandb
 
 
@@ -33,12 +33,16 @@ def random_seed(seed_value, use_cuda):
 def main(cfg: DictConfig):
     # calculate batch_size
     cfg.data.batch_size = cfg.data.batch_base * cfg.cluster.batch_mul
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda") 
+    else:
+        device = torch.device("cpu")
     logger = pl_loggers.WandbLogger(project=cfg.wandb.project)
     data_module = BaseDataModule(cfg)
+    #module = BaselineModule(cfg, device)
     module = MISegModule(cfg, device)
-    #module = VQModule(cfg, device)
-    #module = AutoencoderKL(cfg, device)
     random_seed(cfg.training.seed, torch.cuda.is_available())
 
     metric_checkpoint = ModelCheckpoint(dirpath=logger.experiment.dir, verbose=True, monitor='Source mIoU', mode='max')
@@ -50,7 +54,7 @@ def main(cfg: DictConfig):
     trainer = pl.Trainer(max_epochs=cfg.training.epochs,
                          callbacks=callbacks, logger=logger,
                          accelerator='gpu',
-                         strategy=DDPStrategy(find_unused_parameters=True, process_group_backend=cfg.cluster.backend),
+                         #strategy=DDPStrategy(find_unused_parameters=True, process_group_backend=cfg.cluster.backend),
                          devices=cfg.cluster.n_gpus,
                          log_every_n_steps = 20)
 
