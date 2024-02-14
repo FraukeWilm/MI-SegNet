@@ -4,13 +4,15 @@ from MI_SegNet import Mine_Conv, Seg_encoder_LM,Seg_decoder_LM,Recon_encoder_LM,
 from torchvision import transforms
 from wandb.sdk.data_types.image import Image
 from torchmetrics.classification.jaccard import JaccardIndex
+from torchmetrics.image.fid import FrechetInceptionDistance
 from loss import *
-from perceptual_loss import LPIPS
+from perceptual_loss import VGGPerceptualLoss, ResNetPerceptualLoss
 import numpy as np
 
 class MISegModule(pl.LightningModule):
     def __init__(self, cfg, device, **kwargs):
         super().__init__()
+        self._device = device
         self.automatic_optimization = False
         self._lr = cfg.training.lr
         self._log_imgs = False
@@ -37,6 +39,8 @@ class MISegModule(pl.LightningModule):
         self._mi_loss_agg = torchmetrics.MeanMetric()
         self.jaccard_source = JaccardIndex(task="multiclass", num_classes=cfg.model.output_channel, average='none', ignore_index=-1)
         self.jaccard_target = JaccardIndex(task="multiclass", num_classes=cfg.model.output_channel, average='none', ignore_index=-1)
+        self.fid_source = FrechetInceptionDistance(feature=64, normalize=True).set_dtype(torch.float32)
+        self.fid_target = FrechetInceptionDistance(feature=64, normalize=True).set_dtype(torch.float32)
 
         # intialize loss functions and weights
         self.ce = CELoss()
@@ -45,7 +49,7 @@ class MISegModule(pl.LightningModule):
         self.w_l1 = cfg.loss.w_l1
         self.ssim = SSIMLoss(device=device)
         self.w_ssim = cfg.loss.w_ssim
-        self.pl = LPIPS()
+        self.pl = ResNetPerceptualLoss()
         self.w_p = cfg.loss.w_p
 
         # optimizers
@@ -58,6 +62,7 @@ class MISegModule(pl.LightningModule):
         return output
 
     def training_step(self, batch, batch_idx):
+        # get training batch
         inputs_1 = batch[0].float().to(self.device) # domain 1 anatomy 1
         inputs_2 = batch[1].float().to(self.device) # domain 2 anatomy 2
         inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
@@ -65,34 +70,42 @@ class MISegModule(pl.LightningModule):
         labels_1 = batch[4].to(self.device)
         labels_2 = batch[5].to(self.device)
 
+        # normalize inputs to 0.5 mu and sigma
         inputs_1_trans = self.transform_image(inputs_1)
         inputs_2_trans = self.transform_image(inputs_2)
 
+        # segmentation forward pass
         seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, labels_1, True)
         seg_loss_2, seg_results_2 = self.update_Seg(inputs_2_trans, labels_2, True)
         seg_loss = seg_loss_1 + seg_loss_2
 
+        # reconstruction forward pass 
         recon_loss_1, rec_results_1 = self.update_Rec(inputs_1_trans, inputs_1, True)
         recon_loss_2, rec_results_2 = self.update_Rec(inputs_2_trans, inputs_2, True)
         recon_loss = recon_loss_1 + recon_loss_2
 
+        # adversarial reconstruction forward pass 
         rec_adv_loss_1, rec_results_12 = self.update_Rec_Adv(inputs_1_trans, inputs_2_trans, inputs_12, True)
         rec_adv_loss_2, rec_results_21 = self.update_Rec_Adv(inputs_2_trans, inputs_1_trans, inputs_21, True)
         rec_adv_loss = rec_adv_loss_1 + rec_adv_loss_2
 
+        # mutual information forward pass
         mi_loss_1 = self.update_MI(inputs_1_trans, True)
         mi_loss_2 = self.update_MI(inputs_2_trans, True)
         mi_loss = mi_loss_1 + mi_loss_2
 
+        # train MI network
         for _ in range(5):
             learn_mi_loss_1 = self.learn_mine(inputs_1_trans)
             learn_mi_loss_2 = self.learn_mine(inputs_2_trans)
 
+        # compute training loss 
         loss = seg_loss + recon_loss + rec_adv_loss
         self._train_loss_agg.update(loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
+        # get validation batch
         inputs_1 = batch[0].float().to(self.device) # domain 1 anatomy 1
         inputs_2 = batch[1].float().to(self.device)  # domain 2 anatomy 2
         inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
@@ -100,33 +113,46 @@ class MISegModule(pl.LightningModule):
         labels_1 = batch[4].to(self.device)
         labels_2 = batch[5].to(self.device)
 
+        # normalize inputs to 0.5 mu and sigma
         inputs_1_trans = self.transform_image(inputs_1)
         inputs_2_trans = self.transform_image(inputs_2)
 
-        # forward
+        # segmentation forward pass
         seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, labels_1, False)
         seg_loss_2, seg_results_2 = self.update_Seg(inputs_2_trans, labels_2, False)
         seg_loss = seg_loss_1 + seg_loss_2
 
+        # reconstruction forward pass 
         recon_loss_1, rec_results_1 = self.update_Rec(inputs_1_trans, inputs_1, False)
         recon_loss_2, rec_results_2 = self.update_Rec(inputs_2_trans, inputs_2, False)
         recon_loss = recon_loss_1 + recon_loss_2
 
+        # adversarial reconstruction forward pass 
         rec_adv_loss_1, rec_results_12 = self.update_Rec_Adv(inputs_1_trans, inputs_2_trans, inputs_12, False)
         rec_adv_loss_2, rec_results_21 = self.update_Rec_Adv(inputs_2_trans, inputs_1_trans, inputs_21, False)
         rec_adv_loss = rec_adv_loss_1 + rec_adv_loss_2
 
+        # mutual information forward pass
         mi_loss_1 = self.update_MI(inputs_1_trans, False)
         mi_loss_2 = self.update_MI(inputs_2_trans, False)
         mi_loss = mi_loss_1 + mi_loss_2
 
+        # compute validation loss 
         val_loss = seg_loss + recon_loss + rec_adv_loss
         self._val_loss_agg.update(val_loss)
         self._seg_loss_agg.update(seg_loss)
         self._recon_loss_agg.update(recon_loss)
         self._mi_loss_agg.update(mi_loss)
+        
+        # compute source data validation metrics (i.e. IoU and FID)
         self.jaccard_source.update(seg_results_1, labels_1)
+        #self.fid_source.update(inputs_1, real=True)
+        #self.fid_source.update(rec_results_1, real=False)
+
+        # compute target data validation metrics (i.e. IoU and FID)
         self.jaccard_target.update(seg_results_2, labels_2)
+        #self.fid_target.update(inputs_2, real=True)
+        #self.fid_target.update(rec_results_2, real=False)
 
         # we could also log example images to wandb here
         if batch_idx == 0 and self.current_epoch % 10 ==0:
@@ -154,12 +180,12 @@ class MISegModule(pl.LightningModule):
                 self.logger.log_metrics({"Reconstruction Output": rec_img})
 
 
-    def training_epoch_end(self, outputs):
+    def on_train_epoch_end(self):
         # required if values returned in the training_steps have to be processed in a specific way
         self.log("Train Loss", self._train_loss_agg.compute(), sync_dist=True)
         self._train_loss_agg.reset()
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         # required if values returned in the validation_step have to be processed in a specific way
         self.log("Val Loss", self._val_loss_agg.compute(), sync_dist=True)
         self._val_loss_agg.reset()
@@ -172,15 +198,25 @@ class MISegModule(pl.LightningModule):
         self.log("MI Loss", self._mi_loss_agg.compute(), sync_dist=True)
         self._mi_loss_agg.reset()
 
+        # log source IoU
         iou_source = self.jaccard_source.compute()
         self.log("Source mIoU", iou_source.mean(), sync_dist=True)
         self.log_dict({"Source IoU Background": iou_source[0], "Source IoU Normal": iou_source[1], "Source IoU Tumor": iou_source[2]}, sync_dist=True)
         self.jaccard_source.reset()
 
+        # log target IoU
         iou_target = self.jaccard_target.compute()
         self.log("Target mIoU", iou_target.mean(), sync_dist=True)
         self.log_dict({"Target IoU Background": iou_target[0], "Target IoU Normal": iou_target[1], "Target IoU Tumor": iou_target[2]}, sync_dist=True)
         self.jaccard_target.reset()
+
+        # log source FID
+        #self.log("Source FID", self.fid_source.compute(), sync_dist=True)
+        self.fid_source.reset()
+
+        # log target FID
+        #self.log("Traget FID", self.fid_target.compute(), sync_dist=True)
+        self.fid_target.reset()
 
     def configure_optimizers(self):
         schedulers = []
