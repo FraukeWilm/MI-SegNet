@@ -1,5 +1,4 @@
 import torch
-import hydra
 import os
 os.environ["WANDB_MODE"]="offline"
 import random
@@ -11,8 +10,10 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQ
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from data.datamodule import BaseDataModule
 from module import MISegModule
-from module_baseline_unet import BaselineModule
+from baselines.module_baseline_unet import BaselineModule
 import wandb
+import yaml
+import argparse 
 
 
 def random_seed(seed_value, use_cuda):
@@ -29,10 +30,12 @@ def random_seed(seed_value, use_cuda):
       torch.backends.cudnn.benchmark = False
   print(f'Random state set:{seed_value}, cuda used: {use_cuda}')
 
-@hydra.main(version_base=None, config_path="configs/", config_name="config")
-def main(cfg: DictConfig):
+def main(args):
     # calculate batch_size
+    cfg = DictConfig(yaml.safe_load(open("configs/{}.yaml".format(args.config_name))))
     cfg.data.batch_size = cfg.data.batch_base * cfg.cluster.batch_mul
+    if not cfg.files.image_path:
+        cfg.files.image_path = args.datadir
     if torch.backends.mps.is_available():
         device = torch.device("mps")
     elif torch.cuda.is_available():
@@ -62,7 +65,10 @@ def main(cfg: DictConfig):
     wandb.finish()
 
 if __name__ == "__main__":
-    main()
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config-name", help="Define config file.")
+    parser.add_argument("--datadir", help="Set data dir.")
+    args = parser.parse_args()
+    main(args)
 
 
