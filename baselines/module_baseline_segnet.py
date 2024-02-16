@@ -7,7 +7,7 @@ from torchmetrics.classification.jaccard import JaccardIndex
 from loss import *
 
 
-class BaselineModule(pl.LightningModule):
+class SegnetModule(pl.LightningModule):
     def __init__(self, cfg, device, **kwargs):
         super().__init__()
         self.automatic_optimization = False
@@ -33,7 +33,6 @@ class BaselineModule(pl.LightningModule):
         # intialize loss functions and weights
         self.ce = CELoss()
         self.dice = DiceLoss()
-        self.l1 = L1Loss()
 
         # optimizers
         self.optimizer_idxs = ['optimizer_seg_en', 'optimizer_seg_de']
@@ -45,6 +44,7 @@ class BaselineModule(pl.LightningModule):
         return output
 
     def training_step(self, batch, batch_idx):
+        # get training batch
         inputs_1 = batch[0].float().to(self.device) # domain 1 anatomy 1
         inputs_2 = batch[1].float().to(self.device) # domain 2 anatomy 2
         inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
@@ -52,9 +52,11 @@ class BaselineModule(pl.LightningModule):
         labels_1 = batch[4].to(self.device)
         labels_2 = batch[5].to(self.device)
 
-        inputs_1_trans = self.transform_image(inputs_1)
-        inputs_2_trans = self.transform_image(inputs_2)
+        # normalize inputs to 0.5 mu and sigma
+        inputs_1_trans = inputs_1 #self.transform_image(inputs_1)
+        inputs_2_trans = inputs_2 #self.transform_image(inputs_2)
 
+        # segmentation forward pass
         seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, labels_1, True)
         seg_loss_2, seg_results_2 = self.update_Seg(inputs_2_trans, labels_2, True)
         seg_loss = seg_loss_1 + seg_loss_2
@@ -64,6 +66,7 @@ class BaselineModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        # get validation batch
         inputs_1 = batch[0].float().to(self.device) # domain 1 anatomy 1
         inputs_2 = batch[1].float().to(self.device)  # domain 2 anatomy 2
         inputs_12 = batch[2].float().to(self.device) # domain 1 anatomy 2
@@ -71,18 +74,22 @@ class BaselineModule(pl.LightningModule):
         labels_1 = batch[4].to(self.device)
         labels_2 = batch[5].to(self.device)
 
+        # normalize inputs to 0.5 mu and sigma
         inputs_1_trans = self.transform_image(inputs_1)
         inputs_2_trans = self.transform_image(inputs_2)
 
-        # forward
+        # segmentation forward pass
         seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, labels_1, False)
         seg_loss_2, seg_results_2 = self.update_Seg(inputs_2_trans, labels_2, False)
         seg_loss = seg_loss_1 + seg_loss_2
 
+        # compute validation loss 
         val_loss = seg_loss
         self._val_loss_agg.update(val_loss)
         self._seg_loss_agg.update(seg_loss)
+        # compute source data validation metrics
         self.jaccard_source.update(seg_results_1, labels_1)
+         # compute target data validation metrics
         self.jaccard_target.update(seg_results_2, labels_2)
 
         # we could also log example images to wandb here
@@ -109,12 +116,12 @@ class BaselineModule(pl.LightningModule):
                 self.logger.log_metrics({"Segmentation Output": mask_img})
 
 
-    def training_epoch_end(self, outputs):
+    def on_train_epoch_end(self):
         # required if values returned in the training_steps have to be processed in a specific way
         self.log("Train Loss", self._train_loss_agg.compute(), sync_dist=True)
         self._train_loss_agg.reset()
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         # required if values returned in the validation_step have to be processed in a specific way
         self.log("Val Loss", self._val_loss_agg.compute(), sync_dist=True)
         self._val_loss_agg.reset()
