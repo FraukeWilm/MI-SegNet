@@ -10,7 +10,10 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQ
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from data.datamodule import BaseDataModule
 from module import MISegModule
-from baselines.module_baseline_unet import BaselineModule
+from module_var_autoencoder import VarModule
+from baselines.module_baseline_unet import UnetModule
+from baselines.module_baseline_densenet import DensenetModule
+from baselines.module_baseline_segnet import SegnetModule
 import wandb
 import yaml
 import argparse 
@@ -44,8 +47,18 @@ def main(args):
         device = torch.device("cpu")
     logger = pl_loggers.WandbLogger(project=cfg.wandb.project)
     data_module = BaseDataModule(cfg)
-    #module = BaselineModule(cfg, device)
-    module = MISegModule(cfg, device)
+
+    match args.network:
+        case 'misegnet':
+            module = MISegModule(cfg, device)
+        case 'variational':
+            module = VarModule(cfg, device)
+        case 'unet':
+            module = UnetModule(cfg, device)
+        case 'densenet':
+            module = DensenetModule(cfg, device)
+        case 'segnet':
+            module = SegnetModule(cfg, device)
     random_seed(cfg.training.seed, torch.cuda.is_available())
 
     metric_checkpoint = ModelCheckpoint(dirpath=logger.experiment.dir, verbose=True, monitor='Source mIoU', mode='max')
@@ -68,6 +81,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config-name", help="Define config file.")
     parser.add_argument("--datadir", help="Set data dir.")
+    parser.add_argument("--network", help="Set network.")
     args = parser.parse_args()
     main(args)
 
