@@ -12,6 +12,7 @@ from torchvision import transforms
 from torchmetrics.classification import ConfusionMatrix
 from torchmetrics.functional.classification.jaccard import _jaccard_index_reduce
 from MI_SegNet import Seg_encoder_LM, Seg_decoder_LM
+import argparse 
 
 class Inference:
     def __init__(self, dir_path, image_path, annotation_path, config, num_classes):
@@ -127,16 +128,20 @@ class Inference:
         self.get_ious()
  
 if __name__ == '__main__':
-    dir_path = 'wandb'
-    runs = filter(lambda file: file.startswith('run'), os.listdir(dir_path))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment_dir", help="Define experiment directory.")
+    parser.add_argument("--datadir", help="Set data dir.")
+    parser.add_argument("--annotation_path", help="Set annotation path.")
+    args = parser.parse_args()
+    runs = filter(lambda file: file.startswith('run'), os.listdir(args.experiment_dir))
     for run in list(runs):
         config = {}
-        with open(os.path.join(dir_path, run, 'files', "config.yaml"), 'r') as stream:
+        with open(os.path.join(args.experiment_dir, run, 'files', "config.yaml"), 'r') as stream:
             wandb_config = yaml.safe_load(stream)
         for (key, value) in wandb_config.items():
             config[key.split("/")[-1]] = value
         print("Evaluating", run)
-        inference_module = Inference(dir_path = os.path.join(dir_path, run), image_path="/Volumes/SLIDES/Slides/SegmentationMultiScanner/Combined/test", annotation_path="/Volumes/SLIDES/Slides/SegmentationMultiScanner/scc-full-res.json", config = config, num_classes=3)
+        inference_module = Inference(dir_path = os.path.join(args.experiment_dir, run), image_path=args.datadir, annotation_path=args.annotation_path, config = config, num_classes=3)
         inference_module.run()
 
 
