@@ -70,8 +70,8 @@ class VarModule(pl.LightningModule):
         labels_2 = batch[5].to(self.device)
 
         # normalize inputs to 0.5 mu and sigma
-        inputs_1_trans = inputs_1 #self.transform_image(inputs_1)
-        inputs_2_trans = inputs_2 #self.transform_image(inputs_2)
+        inputs_1_trans = self.transform_image(inputs_1)
+        inputs_2_trans = self.transform_image(inputs_2)
 
         # segmentation forward pass
         seg_loss_1, seg_results_1 = self.update_Seg(inputs_1_trans, labels_1, True)
