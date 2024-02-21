@@ -10,6 +10,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQ
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from data.datamodule import BaseDataModule
 from module import MISegModule
+from module_unet import MIUnetModule
 from module_var_autoencoder import VarModule
 from baselines.module_baseline_unet import UnetModule
 from baselines.module_baseline_densenet import DensenetModule
@@ -45,12 +46,14 @@ def main(args):
         device = torch.device("cuda") 
     else:
         device = torch.device("cpu")
-    logger = pl_loggers.WandbLogger(project=cfg.wandb.project)
+    logger = pl_loggers.WandbLogger(project=cfg.wandb.project, save_dir=cfg.wandb.dir)
     data_module = BaseDataModule(cfg)
 
     match args.network:
         case 'misegnet':
             module = MISegModule(cfg, device)
+        case 'miunet':
+            module = MIUnetModule(cfg, device)
         case 'variational':
             module = VarModule(cfg, device)
         case 'unet':

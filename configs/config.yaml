@@ -1,6 +1,7 @@
 wandb:
   entity: frauke
   project: MI-SegNet
+  dir: /Users/fraukewilm/Code/MI-SegNet/
 
 files:
   image_path: null
