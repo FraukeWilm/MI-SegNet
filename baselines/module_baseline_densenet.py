@@ -19,10 +19,10 @@ class DensenetModule(pl.LightningModule):
 
         # save all named parameters
         self.save_hyperparameters()
-        unet = DeepLabV3Plus(encoder_name='resnet34', classes=3)
-        self.seg_encoder = unet.encoder.to(device)
-        self.seg_decoder = unet.decoder.to(device)
-        self.segmentation_head = unet.segmentation_head.to(device)
+        densenet = DeepLabV3Plus(encoder_name='resnet34', classes=3)
+        self.seg_encoder = densenet.encoder.to(device)
+        self.seg_decoder = densenet.decoder.to(device)
+        self.segmentation_head = densenet.segmentation_head.to(device)
         self.transform_image = Identity() #transforms.Normalize(0.5, 0.5)
 
         # create loss and metric functions
