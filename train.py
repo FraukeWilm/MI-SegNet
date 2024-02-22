@@ -38,6 +38,7 @@ def main(args):
     # calculate batch_size
     cfg = DictConfig(yaml.safe_load(open("configs/{}.yaml".format(args.config_name))))
     cfg.data.batch_size = cfg.data.batch_base * cfg.cluster.batch_mul
+    cfg.data.fold = args.fold
     if not cfg.files.image_path:
         cfg.files.image_path = args.datadir
     if torch.backends.mps.is_available():
@@ -85,6 +86,7 @@ if __name__ == "__main__":
     parser.add_argument("--config-name", help="Define config file.")
     parser.add_argument("--datadir", help="Set data dir.")
     parser.add_argument("--network", help="Set network.")
+    parser.add_argument("--fold", help="Set fold.")
     args = parser.parse_args()
     main(args)
 
