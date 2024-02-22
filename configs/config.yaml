@@ -8,6 +8,7 @@ files:
   annotation_file: /Volumes/SLIDES/Slides/SegmentationMultiScanner/scc-full-res.json
 
 data:
+  fold: null
   patch_size: 256
   batch_size: null
   batch_base: 2 #8
