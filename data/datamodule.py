@@ -31,6 +31,7 @@ class BaseDataModule(pl.LightningDataModule):
         self._scanner_A = cfg.training.scanner_A
         self._scanner_B = cfg.training.scanner_B
         self.aug_train, self.aug_unmod = None, None
+        self._fold = cfg.data.fold
         self.setup_augmentations()
 
         self._label_dict = {'Bg': 0, 'Bone': 1, 'Cartilage': 1, 'Dermis': 1, 'Epidermis': 1, 'Subcutis': 1,
@@ -67,9 +68,9 @@ class BaseDataModule(pl.LightningDataModule):
             image_file_A = Path(glob.glob("{}/**/{}_{}{}".format(str(self._data_dir), row["Slide"], self._scanner_A, suffixes[self._scanner_A]),recursive=True)[0])
             image_file_B = Path(glob.glob("{}/**/{}_{}{}".format(str(self._data_dir), row["Slide"], self._scanner_B, suffixes[self._scanner_B]),recursive=True)[0])
 
-            if row["Dataset"] == "val":
+            if row[self._fold] == "val":
                 self.valid_idxs.append(idx)
-            if row["Dataset"] != "test":
+            if row[self._fold] != "test":
                 files.append((image_file_A, image_file_B))
                 idx += 1
             else:
