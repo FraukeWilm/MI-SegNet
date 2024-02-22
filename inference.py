@@ -13,10 +13,14 @@ from torchmetrics.classification import ConfusionMatrix
 from torchmetrics.functional.classification.jaccard import _jaccard_index_reduce
 from MI_SegNet import Seg_encoder_LM, Seg_decoder_LM
 import argparse 
+from omegaconf import DictConfig
+from segmentation_models_pytorch import Unet, DeepLabV3Plus
+from torch import nn
 
 class Inference:
-    def __init__(self, dir_path, image_path, annotation_path, config, num_classes):
+    def __init__(self, dir_path, image_path, annotation_path, model, config, num_classes):
         self.config = config
+        self.model = model
         self.dir_path = dir_path
         self.image_path = image_path
         self.annotation_path = annotation_path
@@ -29,23 +33,36 @@ class Inference:
             self.device = torch.device("cuda") 
         else:
             self.device = torch.device("cpu")
-        self.patch_size = self.config['patch_size']['value']
-        self.test_images = os.listdir(self.image_path)[:10]
+        self.patch_size = self.config['data']['patch_size']
+        self.test_images = os.listdir(self.image_path)
         self.label_dict = {'background': 0, 'non-tumor': 1, 'tumor': 2}
         with open("data/whites.yaml", 'r') as stream:
             self.whites = yaml.safe_load(stream)
         with open(self.annotation_path) as f:
             self.annotation_dict = json.load(f)
         self.cm = [ConfusionMatrix(task='multiclass', num_classes=self.num_classes, ignore_index=-1).to(self.device) for _ in range(self.n_domains)]
+        self.transform_image = nn.Identity() #transforms.Normalize(0.5, 0.5)
 
 
     def configure_model(self):
-        self.encoder = Seg_encoder_LM(self.config['input_channel']['value'], init_features=64, num_blocks=2).to(self.device)
-        self.decoder = Seg_decoder_LM(self.config['output_channel']['value'], init_features=64, num_blocks=2).to(self.device)
+        if self.model.__contains__ ('segnet'):
+            self.encoder = Seg_encoder_LM(self.config['model']['input_channel'], init_features=64, num_blocks=2).to(self.device)
+            self.decoder = Seg_decoder_LM(self.config['model']['output_channel'], init_features=64, num_blocks=2).to(self.device)
+        elif self.model.__contains__ ('unet'):
+            unet = Unet(encoder_name='resnet34', classes=3)
+            self.encoder = unet.encoder.to(self.device)
+            self.decoder = unet.decoder.to(self.device) 
+            self.segmentation_head = unet.segmentation_head.to(self.device)
+        elif self.model == 'densenet':
+            densenet = DeepLabV3Plus(encoder_name='resnet34', classes=3)
+            self.seg_encoder = densenet.encoder.to(self.device)
+            self.seg_decoder = densenet.decoder.to(self.device)
+            self.segmentation_head = densenet.segmentation_head.to(self.device)
 
     def load_model_checkpoint(self):
         encoder_ckpts = {}
         decoder_ckpts = {}
+        head_ckpts = {}
         ckpt_name = list(filter(lambda file: file.endswith('.ckpt'), os.listdir(os.path.join(self.dir_path, 'files'))))[0]
         ckpt_temp = torch.load(os.path.join(self.dir_path,'files', ckpt_name), map_location=self.device)['state_dict']
         for (key, value) in ckpt_temp.items():
@@ -53,21 +70,32 @@ class Inference:
                 encoder_ckpts[key.split("seg_encoder.")[-1]] = value
             elif key.startswith('seg_decoder'):
                 decoder_ckpts[key.split("seg_decoder.")[-1]] = value
+            elif key.startswith('segmentation_head'):
+                head_ckpts[key.split("segmentation_head.")[-1]] = value
         self.encoder.load_state_dict(encoder_ckpts)
+        self.encoder.eval()
         self.decoder.load_state_dict(decoder_ckpts)
+        self.decoder.eval()
+        if not self.model.__contains__ ('segnet'):
+            self.segmentation_head.load_state_dict(head_ckpts)
+            self.segmentation_head.eval()
 
     def process(self):
         # start extracting patches
         with torch.inference_mode():
-            self.encoder.eval()
-            self.decoder.eval()
             for sample in tqdm(self.test_images):
                 tensors, gt = self.get_batch(sample)
+                tensors = [self.transform_image(t) for t in tensors]
                 tensors = self.chunk(tensors, n_chunks=gt.shape[1]//self.patch_size)
                 gt = self.chunk(gt.unsqueeze(1), n_chunks=gt.shape[1]//self.patch_size)
                 input_batch = torch.stack(tensors).to(self.device)
                 features = self.encoder(input_batch)
-                outputs = torch.max(self.decoder(features), dim=1)[1]
+                if not self.model.__contains__ ('segnet'):
+                    outputs = self.decoder(*features)
+                    outputs = self.segmentation_head(outputs)
+                else:
+                    outputs = self.decoder(features)
+                outputs = torch.max(outputs, dim=1)[1]
                 self.update_cm(outputs, gt)
 
     def get_batch(self, sample):
@@ -133,15 +161,15 @@ if __name__ == '__main__':
     parser.add_argument("--datadir", help="Set data dir.")
     parser.add_argument("--annotation_path", help="Set annotation path.")
     args = parser.parse_args()
-    runs = filter(lambda file: file.startswith('run'), os.listdir(args.experiment_dir))
+    runs = filter(lambda file: file.__contains__('fold'), os.listdir(args.experiment_dir))
     for run in list(runs):
-        config = {}
         with open(os.path.join(args.experiment_dir, run, 'files', "config.yaml"), 'r') as stream:
-            wandb_config = yaml.safe_load(stream)
-        for (key, value) in wandb_config.items():
-            config[key.split("/")[-1]] = value
+            config = eval(yaml.safe_load(stream)['cfg']['value'])
+        with open(os.path.join(args.experiment_dir, run, 'files', "wandb-metadata.json"), 'r') as stream:
+            wandb_config = json.load(stream)
         print("Evaluating", run)
-        inference_module = Inference(dir_path = os.path.join(args.experiment_dir, run), image_path=args.datadir, annotation_path=args.annotation_path, config = config, num_classes=3)
+        model = wandb_config['args'][5]
+        inference_module = Inference(dir_path = os.path.join(args.experiment_dir, run), image_path=args.datadir, annotation_path=args.annotation_path, model=model, config=config, num_classes=3)
         inference_module.run()
 
 
