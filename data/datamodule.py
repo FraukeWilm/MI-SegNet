@@ -88,14 +88,16 @@ class BaseDataModule(pl.LightningDataModule):
         pass
 
     def train_dataloader(self):
+        prefetch_factor = 2 if self._n_workers > 0 else None
         persistent_workers = True if self._n_workers > 0 else False
         return DataLoader(self._ds_train, batch_size=self._batch_size, num_workers=self._n_workers, pin_memory=True,
-                          prefetch_factor=2, shuffle=True, persistent_workers=persistent_workers)
+                          prefetch_factor=prefetch_factor, shuffle=True, persistent_workers=persistent_workers)
 
     def val_dataloader(self):
+        prefetch_factor = 2 if self._n_workers > 0 else None
         persistent_workers = True if self._n_workers > 0 else False
         return DataLoader(self._ds_val, batch_size=self._batch_size, num_workers=self._n_workers, pin_memory=True,
-                          prefetch_factor=2, shuffle=False, persistent_workers=persistent_workers)
+                          prefetch_factor=prefetch_factor, shuffle=False, persistent_workers=persistent_workers)
 
     def train_dataset(self):
         return self._ds_train
