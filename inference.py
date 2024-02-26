@@ -18,9 +18,9 @@ from segmentation_models_pytorch import Unet, DeepLabV3Plus
 from torch import nn
 
 class Inference:
-    def __init__(self, dir_path, image_path, annotation_path, model, config, num_classes):
+    def __init__(self, dir_path, image_path, annotation_path, config, num_classes):
         self.config = config
-        self.model = model
+        self.model = config.model.name
         self.dir_path = dir_path
         self.image_path = image_path
         self.annotation_path = annotation_path
@@ -33,7 +33,7 @@ class Inference:
             self.device = torch.device("cuda") 
         else:
             self.device = torch.device("cpu")
-        self.patch_size = self.config['data']['patch_size']
+        self.patch_size = self.config.data.patch_size
         self.test_images = os.listdir(self.image_path)
         self.label_dict = {'background': 0, 'non-tumor': 1, 'tumor': 2}
         with open("data/whites.yaml", 'r') as stream:
@@ -46,8 +46,8 @@ class Inference:
 
     def configure_model(self):
         if self.model.__contains__ ('segnet'):
-            self.encoder = Seg_encoder_LM(self.config['model']['input_channel'], init_features=64, num_blocks=2).to(self.device)
-            self.decoder = Seg_decoder_LM(self.config['model']['output_channel'], init_features=64, num_blocks=2).to(self.device)
+            self.encoder = Seg_encoder_LM(self.config.model.input_channel, init_features=64, num_blocks=2).to(self.device)
+            self.decoder = Seg_decoder_LM(self.config.model.output_channel, init_features=64, num_blocks=2).to(self.device)
         elif self.model.__contains__ ('unet'):
             unet = Unet(encoder_name='resnet34', classes=3)
             self.encoder = unet.encoder.to(self.device)
@@ -55,8 +55,8 @@ class Inference:
             self.segmentation_head = unet.segmentation_head.to(self.device)
         elif self.model == 'densenet':
             densenet = DeepLabV3Plus(encoder_name='resnet34', classes=3)
-            self.seg_encoder = densenet.encoder.to(self.device)
-            self.seg_decoder = densenet.decoder.to(self.device)
+            self.encoder = densenet.encoder.to(self.device)            
+            self.decoder = densenet.decoder.to(self.device)
             self.segmentation_head = densenet.segmentation_head.to(self.device)
 
     def load_model_checkpoint(self):
@@ -164,12 +164,12 @@ if __name__ == '__main__':
     runs = filter(lambda file: file.__contains__('fold'), os.listdir(args.experiment_dir))
     for run in list(runs):
         with open(os.path.join(args.experiment_dir, run, 'files', "config.yaml"), 'r') as stream:
-            config = eval(yaml.safe_load(stream)['cfg']['value'])
+            config = DictConfig(eval(yaml.safe_load(stream)['cfg']['value']))
         with open(os.path.join(args.experiment_dir, run, 'files', "wandb-metadata.json"), 'r') as stream:
             wandb_config = json.load(stream)
         print("Evaluating", run)
-        model = wandb_config['args'][5]
-        inference_module = Inference(dir_path = os.path.join(args.experiment_dir, run), image_path=args.datadir, annotation_path=args.annotation_path, model=model, config=config, num_classes=3)
+        config['model']['name'] = wandb_config['args'][5]
+        inference_module = Inference(dir_path = os.path.join(args.experiment_dir, run), image_path=args.datadir, annotation_path=args.annotation_path, config=config, num_classes=3)
         inference_module.run()
 
 
