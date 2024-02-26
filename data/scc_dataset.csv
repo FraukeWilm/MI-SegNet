@@ -1,4 +1,4 @@
-﻿Slide;Dataset;Aperio;3D_HISTECH;NZ2.0;NZ210;Leica;fold 1;fold 2;fold 3;fold 4;fold 5
+﻿Slide;Dataset;Aperio;3D_HISTECH;NZ2.0;NZ210;Leica;fold1;fold2;fold3;fold4;fold5
 scc_01;train;146_14a_SCC_MF.svs;146_14_A_SCC.mrxs;146_14a_SCC.ndpi;146_14a_SCC.ndpi;146_14a_SCC.svs;train;train;val;train;train
 scc_02;train;146_14c_SCC_MF.svs;146_14_C_SCC.mrxs;146_14c_SCC.ndpi;146_14c_SCC.ndpi;146_14c_SCC.svs;val;train;train;train;train
 scc_03;val;175_17_SCC_MF.svs;175_17_SCC.mrxs;175_17_SCC.ndpi;175_17_SCC.ndpi;175_17_SCC.svs;val;train;train;train;train
