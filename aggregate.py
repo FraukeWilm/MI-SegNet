@@ -9,8 +9,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_dir", help="Define experiment directory.")
     args = parser.parse_args()
-    ious = [] #pd.DataFrame(columns=['network', 'loss', 'fold', 'cs2', 'nz20', 'nz210', 'gt450', 'p1000'])
-    runs = filter(lambda file: file.startswith('mi-segnet'), os.listdir(args.experiment_dir))
+    ious = []
+    runs = filter(lambda file: file.__contains__('fold'), os.listdir(args.experiment_dir))
     for run in list(runs):
         with open(os.path.join(args.experiment_dir, run, 'files', "wandb-metadata.json"), 'r') as stream:
             config = json.load(stream)
