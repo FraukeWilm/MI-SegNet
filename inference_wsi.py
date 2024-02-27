@@ -1,28 +1,27 @@
-import torch
-from tqdm import tqdm
-import cv2
-import os
-import json
-import numpy as np
-import yaml
-from albumentations.pytorch.transforms import ToTensorV2
-from torchmetrics.classification import ConfusionMatrix
 from torchmetrics.functional.classification.jaccard import _jaccard_index_reduce
-from MI_SegNet import Seg_encoder_LM, Seg_decoder_LM
-import argparse 
 from segmentation_models_pytorch import Unet, DeepLabV3Plus
-import matplotlib.pyplot as plt
-import openslide
+from torchmetrics.classification import ConfusionMatrix
+from MI_SegNet import Seg_encoder_LM, Seg_decoder_LM
 from torch.utils.data import DataLoader
 from omegaconf import DictConfig
-import shutil
 from PIL import Image
+from tqdm import tqdm
+import numpy as np
+import openslide
+import argparse 
+import shutil
+import torch
+import json
+import yaml
+import cv2
+import os
 
 class Inference:
     def __init__(self, dir_path, image_path, annotation_path, config, num_classes):
         self.config = config
         self.model = config.model.name
         self.dir_path = dir_path
+        self.temp_path = os.path.join(dir_path, "files", 'temp')
         self.image_path = image_path
         self.annotation_path = annotation_path
         self.num_classes = num_classes
@@ -113,7 +112,9 @@ class Inference:
             for idx, scanner in enumerate(self.mode_keys['scanner']):
                 wsis = [file for file in os.listdir(os.path.join(self.image_path, scanner)) if not os.path.isdir(file)]
                 for wsi in tqdm(wsis):
-                    os.mkdir(os.path.join(self.dir_path, "temp"))
+                    if os.path.exists(self.temp_path) and os.path.isdir(self.temp_path):
+                        shutil.rmtree(self.temp_path)
+                    #os.mkdir(self.temp_path)
                     slide = openslide.open_slide(os.path.join(self.image_path, scanner, wsi))
                     level = (np.abs(np.array(slide.level_downsamples) - self.down_factor)).argmin()
                     shape = slide.level_dimensions[level]
@@ -134,19 +135,19 @@ class Inference:
                             outputs = self.decoder(features)
                         outputs = torch.max(outputs, dim=1)[1]
                         start, stop = int(self.patch_size*(1/4)), int(self.patch_size*(3/4))
-                        self.cm[idx].update(outputs[:, start:stop, start:stop], gt[:, start:stop, start:stop].squeeze().to(self.device))
-                        for o in range(outputs.shape[0]):
-                            plt.imsave(os.path.join(self.dir_path, "temp", "{}_{}_{}_{}.png".format(wsi.split(".")[0], xs[o], ys[o], scanner)),outputs[o][start:stop, start:stop].cpu().numpy(), vmin=0, vmax=2)
-                    self.stitch_output_mask(wsi.split(".")[0])
+                        self.cm[idx].update(outputs[:, start:stop, start:stop], gt[:, start:stop, start:stop].to(self.device))
+                        #for o in range(outputs.shape[0]):
+                        #    plt.imsave(os.path.join(self.temp_path, "{}_{}_{}_{}.png".format(wsi.split(".")[0], xs[o], ys[o], scanner)),outputs[o][start:stop, start:stop].cpu().numpy(), vmin=0, vmax=2)
+                    #self.stitch_output_mask(wsi.split(".")[0])
 
     def stitch_output_mask(self, filename):
         tile_size = (32, 32)
         max_x, max_y = 0, 0
         tile_paths = []
-        for file in os.listdir(os.path.join(self.dir_path, 'temp')):
+        for file in os.listdir(self.temp_path):
             parts = file.split("_")
             x, y = parts[-3:-1]
-            tile_paths.append((os.path.join(self.dir_path, 'temp', file), int(x), int(y)))
+            tile_paths.append((os.path.join(self.temp_path, file), int(x), int(y)))
             max_x = max(max_x, int(x))
             max_y = max(max_y, int(y))
 
@@ -159,7 +160,6 @@ class Inference:
             tile = tile.resize(tile_size)
             output.paste(tile, (x // 4, y // 4))
         output.save(os.path.join(self.dir_path, "{}.png".format(filename)))
-        shutil.rmtree(os.path.join(self.dir_path, 'temp'))
     
     def get_patch(self, slide, level, x, y):
         patch = np.array(slide.read_region(location=(int(x * self.down_factor), int(y * self.down_factor)),
@@ -214,5 +214,3 @@ if __name__ == '__main__':
         config['model']['name'] = wandb_config['args'][5]
         inference_module = Inference(dir_path = os.path.join(args.experiment_dir, run), image_path=args.datadir, annotation_path=args.annotation_path, config=config, num_classes=3)
         inference_module.run()
-
-
