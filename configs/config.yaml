@@ -14,6 +14,7 @@ data:
   batch_base: 2 #8
   ds_factor: 4
   patches_per_slide: 8
+  hed: True
 
 model:
   input_channel: 3

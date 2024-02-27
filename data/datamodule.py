@@ -48,6 +48,7 @@ class BaseDataModule(pl.LightningDataModule):
             "jitter_d": 1.0,
             "jitter_p": 0.0,
             "grayscale": False,
+            "hed": self._cfg.data.hed,
             "gaussian_blur": 0.0,
             "rotation": True,
             "contrast": 0.0,

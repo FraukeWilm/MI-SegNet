@@ -1,11 +1,122 @@
-import random
-from PIL import ImageFilter
-import torch
-from torchvision import transforms
-import torchvision.transforms.functional as F
-import albumentations as A
+from albumentations.core.transforms_interface import ImageOnlyTransform
+from data.custom_hed_transform import rgb2hed, hed2rgb
 from albumentations.pytorch import ToTensorV2
+import torchvision.transforms.functional as F
+from torchvision import transforms
+from PIL import ImageFilter
+import albumentations as A
 import numpy as np
+import numbers
+import random
+import torch
+
+class HEAugment(ImageOnlyTransform):
+    def __init__(
+        self,
+        haematoxylin_sigma_range=(-0.05, 0.05),
+        haematoxylin_bias_range=(-0.05, 0.05), 
+        eosin_sigma_range=(-0.05, 0.05), 
+        eosin_bias_range=(-0.05, 0.05), 
+        dab_sigma_range=(-0.05, 0.05), 
+        dab_bias_range=(-0.05, 0.05), 
+        cutoff_range=(0, 1),
+        always_apply=False,
+        p=0.5,
+    ):
+        super(HEAugment, self).__init__(always_apply=always_apply, p=p)
+
+        haematoxylin_sigma_range = self.__check_values(haematoxylin_sigma_range, "haematoxylin_sigma")
+        haematoxylin_bias_range = self.__check_values(haematoxylin_bias_range, "haematoxylin_bias")
+        eosin_sigma_range = self.__check_values(eosin_sigma_range, "eosin_sigma")
+        eosin_bias_range = self.__check_values(eosin_bias_range, "eosin_bias")
+        dab_sigma_range = self.__check_values(dab_sigma_range, "dab_sigma")
+        dab_bias_range = self.__check_values(dab_bias_range, "dab_bias")
+
+        self.__cutoff_range = self.__check_values(cutoff_range, "cutoff", bounds=(0, 1))
+
+        self.__sigma_ranges = [haematoxylin_sigma_range, eosin_sigma_range, dab_sigma_range]
+        self.__sigmas = [haematoxylin_sigma_range[0] if haematoxylin_sigma_range is not None else 0.0,
+                         eosin_sigma_range[0] if eosin_sigma_range is not None else 0.0,
+                         dab_sigma_range[0] if dab_sigma_range is not None else 0.0]
+        self.__bias_ranges = [haematoxylin_bias_range, eosin_bias_range, dab_bias_range]
+        self.__biases = [haematoxylin_bias_range[0] if haematoxylin_bias_range is not None else 0.0,
+                         eosin_bias_range[0] if eosin_bias_range is not None else 0.0,
+                         dab_bias_range[0] if dab_bias_range is not None else 0.0]
+
+    @staticmethod
+    def __check_values(value, name, bounds=(-1, 1)):
+        if isinstance(value, numbers.Number):
+            if value < 0:
+                raise ValueError("If {} is a single number, it must be non negative.".format(name))
+        elif isinstance(value, (tuple, list)) and len(value) == 2:
+            if not bounds[0] <= value[0] <= value[1] <= bounds[1]:
+                raise ValueError("{} values should be between {}".format(name, bounds))
+        else:
+            raise TypeError("{} should be a single number or a list/tuple with length 2.".format(name))
+
+        return value
+    
+    def randomize(self):
+        # Randomize sigma and bias for each channel.
+        self.__sigmas = [np.random.uniform(low=sigma_range[0], high=sigma_range[1], size=None) if sigma_range is not None else 1.0 for sigma_range in self.__sigma_ranges]
+        self.__biases = [np.random.uniform(low=bias_range[0], high=bias_range[1], size=None) if bias_range is not None else 0.0 for bias_range in self.__bias_ranges]
+
+    def apply(self, img,  **params):
+        self.randomize()
+        # Check if the patch is inside the cutoff values.
+        #
+        patch_mean = np.mean(a=img) / 255.0
+        if self.__cutoff_range[0] <= patch_mean <= self.__cutoff_range[1]:
+            # Reorder the patch to channel last format and convert the image patch to HED color coding.
+            #
+            patch_hed = rgb2hed(rgb=img)
+
+            # Augment the Haematoxylin channel.
+            #
+            if self.__sigmas[0] != 0.0:
+                patch_hed[:, :, 0] *= (1.0 + self.__sigmas[0])
+
+            if self.__biases[0] != 0.0:
+                patch_hed[:, :, 0] += self.__biases[0]
+
+            # Augment the Eosin channel.
+            #
+            if self.__sigmas[1] != 0.0:
+                patch_hed[:, :, 1] *= (1.0 + self.__sigmas[1])
+
+            if self.__biases[1] != 0.0:
+                patch_hed[:, :, 1] += self.__biases[1]
+
+            # Augment the DAB channel.
+            #
+            if self.__sigmas[2] != 0.0:
+                patch_hed[:, :, 2] *= (1.0 + self.__sigmas[2])
+
+            if self.__biases[2] != 0.0:
+                patch_hed[:, :, 2] += self.__biases[2]
+
+            # Convert back to RGB color coding and order back to channels first order.
+            #
+            patch_rgb = hed2rgb(hed=patch_hed)
+            patch_rgb = np.clip(a=patch_rgb, a_min=0.0, a_max=1.0)
+            patch_rgb *= 255.0
+            patch_rgb = patch_rgb.astype(dtype=np.uint8)
+
+            return patch_rgb
+
+        else:
+            # The image patch is outside the cutoff interval.
+            #
+            return img
+
+    def get_transform_init_args_names(self):
+        return ("haematoxylin_sigma_range",
+        "haematoxylin_bias_range", 
+        "eosin_sigma_range", 
+        "eosin_bias_range", 
+        "dab_sigma_range", 
+        "dab_bias_range", 
+        "cutoff_range")
 
 
 class GaussianBlur(object):
@@ -107,6 +218,9 @@ def album_transforms(eval=False, aug=None):
     if aug["jitter_d"] and not eval:
         trans.append(A.ColorJitter(brightness = 0.2*aug["jitter_d"], contrast = 0.4*aug["jitter_d"], saturation = 0.8*aug["jitter_d"], hue = 0.1*aug["jitter_d"],
                                    p=aug["jitter_p"]))
+        
+    if aug["hed"] and not eval:
+        trans.append(HEAugment(p=0.5))
 
     if aug["gaussian_blur"] and not eval:
         trans.append(A.GaussianBlur(blur_limit=(3,7), sigma_limit=(0.1, 2), p=aug["gaussian_blur"]))
