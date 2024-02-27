@@ -1,5 +1,4 @@
 from segmentation_models_pytorch import Unet, DeepLabV3Plus
-from torchvision.models import resnet18, resnet34
 from data.datamodule import BaseDataModule
 from MI_SegNet import Seg_encoder_LM
 from omegaconf import DictConfig
